@@ -1,0 +1,6 @@
+streamlit
+pandas
+databricks-sql-connector
+pydeck
+altair
+requests
