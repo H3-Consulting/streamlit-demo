@@ -16,9 +16,6 @@ from datetime import date, timedelta
 st.set_page_config(page_title="E-Commerce Analytics (Databricks)", layout="wide")
 st.title("🛍️ E-Commerce Analytics — Databricks SQL Warehouse")
 
-st.caption("Demo dashboard reading **sandbox.ecommerce_orders** from your Databricks SQL Warehouse. \
-Use the AI panel (optional) to *generate SQL from natural language* when a Model Serving endpoint is configured.")
-
 # -----------------------------
 # Connection helpers
 # -----------------------------
