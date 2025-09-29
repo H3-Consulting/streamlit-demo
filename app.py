@@ -358,46 +358,94 @@ st.markdown("#### Recent Orders")
 st.dataframe(sample, use_container_width=True, hide_index=True)
 
 # =========================================================
-# Power-user SQL runner (restricted to ecommerce_orders)
+# Power-user SQL runner (restricted to sandbox.ecommerce_orders + auto-injected filters)
 # =========================================================
-with st.expander("🔎 Run a custom SQL (restricted to sandbox.ecommerce_orders)"):
+with st.expander("🔎 Run a custom SQL (restricted to sandbox.ecommerce_orders & current filters)"):
 
-    default_sql = f"""
-    SELECT * 
+    default_sql = """
+    SELECT
+      order_id, customer_id, customer_name, region, order_date, ship_date,
+      product_id, category, sub_category, product_name, quantity, unit_price,
+      discount, sales, profit
     FROM sandbox.ecommerce_orders
-    WHERE {where_sql}
     ORDER BY order_date DESC
     LIMIT 100
     """.strip()
 
-    user_sql = st.text_area("SQL", value=default_sql, height=140)
+    user_sql = st.text_area("SQL (READ-ONLY)", value=default_sql, height=160)
 
-    def is_safe_sql(sql_text: str) -> bool:
+    # ---------- helpers ----------
+    def _sql_clean_upper(s: str) -> str:
+        return " ".join(s.upper().replace("\n", " ").split())
+
+    def _quote(v: str) -> str:
+        # simple literal escaper for controlled sidebar inputs
+        return "'" + str(v).replace("'", "''") + "'"
+
+    def build_filters_sql_literal() -> str:
+        parts = [f"order_date BETWEEN {_quote(start_date)} AND {_quote(end_date)}"]
+        if region:
+            parts.append("region IN (" + ", ".join(_quote(r) for r in region) + ")")
+        if category:
+            parts.append("category IN (" + ", ".join(_quote(c) for c in category) + ")")
+        if subcat:
+            parts.append("sub_category IN (" + ", ".join(_quote(s) for s in subcat) + ")")
+        return " AND ".join(parts)
+
+    def is_safe_and_scoped(sql_text: str) -> tuple[bool, str]:
         """
-        Allow only queries that reference sandbox.ecommerce_orders.
-        Disallow keywords for write operations.
+        Enforce:
+          - single statement (no ';')
+          - no comments (/* */ or --)
+          - no JOIN/UNION/; (keeps scope on single table)
+          - only reads (no INSERT/UPDATE/DELETE/MERGE/DDL/GRANT/REVOKE)
+          - must reference SANDBOX.ECOMMERCE_ORDERS (optionally with alias)
+        Return (ok, reason_if_not_ok)
         """
-        sql_upper = sql_text.upper()
-        allowed_table = "SANDBOX.ECOMMERCE_ORDERS"
+        u = _sql_clean_upper(sql_text)
 
-        banned_keywords = [
-            "INSERT", "UPDATE", "DELETE", "MERGE",
-            "CREATE", "DROP", "ALTER", "TRUNCATE",
-            "GRANT", "REVOKE"
-        ]
+        if ";" in sql_text:
+            return False, "Multiple statements (';') are not allowed."
+        if "/*" in sql_text or "--" in sql_text:
+            return False, "SQL comments are not allowed."
+        banned = ("INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE")
+        if any(f" {kw} " in f" {u} " for kw in banned):
+            return False, "Write/DDL statements are not allowed."
+        if " JOIN " in u or " UNION " in u:
+            return False, "JOIN/UNION are not allowed in the demo runner."
+        # must target the single allowed table
+        if "SANDBOX.ECOMMERCE_ORDERS" not in u:
+            return False, "Query must reference sandbox.ecommerce_orders."
+        return True, ""
 
-        if allowed_table not in sql_upper:
-            return False
-        if any(f" {kw} " in f" {sql_upper} " for kw in banned_keywords):
-            return False
-        return True
-
-    if st.button("Execute SQL", key="run_custom_sql"):
-        if not is_safe_sql(user_sql):
-            st.error("❌ Query not allowed. You can only run read-only queries on sandbox.ecommerce_orders.")
+    def inject_filters(sql_text: str, filters_sql: str) -> str:
+        """
+        Append current filters to the user's query.
+        If there's already a WHERE, add 'AND (filters)'. Else add 'WHERE (filters)'.
+        We append before any trailing whitespace; we don't try to insert before ORDER/GROUP.
+        """
+        s = sql_text.strip().rstrip(";").strip()
+        u = _sql_clean_upper(s)
+        if " WHERE " in u:
+            return f"{s} AND ({filters_sql})"
         else:
-            df_custom = run_query(user_sql, tuple(params))
-            st.dataframe(df_custom, use_container_width=True, hide_index=True)
+            return f"{s} WHERE ({filters_sql})"
+
+    # ---------- run ----------
+    if st.button("Execute SQL", key="run_custom_sql_restricted"):
+        ok, reason = is_safe_and_scoped(user_sql)
+        if not ok:
+            st.error(f"❌ Query not allowed: {reason}")
+        else:
+            filters_sql = build_filters_sql_literal()
+            final_sql = inject_filters(user_sql, filters_sql)
+            st.code(final_sql, language="sql")
+            # Note: we intentionally do NOT pass params; filters are already inlined safely
+            df_custom = run_query(final_sql)
+            if df_custom.empty:
+                st.info("No rows returned for the current filters.")
+            else:
+                st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
 # =========================================================
 # AI Chat Example
