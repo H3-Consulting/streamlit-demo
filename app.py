@@ -14,7 +14,7 @@ from datetime import date, timedelta
 # Page & Styles
 # -----------------------------
 st.set_page_config(page_title="E-Commerce Analytics (Databricks)", layout="wide")
-st.title("🛍️ E-Commerce Analytics — Databricks SQL Warehouse")
+st.title("🛍️ E-Commerce Analytics — Databricks")
 
 # -----------------------------
 # Connection helpers
