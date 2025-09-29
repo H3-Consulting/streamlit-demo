@@ -367,71 +367,114 @@ with st.expander("🔎 Run a custom SQL (safe parameters encouraged)"):
         df_custom = run_query(sql_text, tuple(params))
         st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
-# -----------------------------
-# AI Generate (optional)
-# -----------------------------
+# =========================================================
+# AI Chat Example
+# =========================================================
 st.divider()
-st.subheader("🤖 AI Generate (Databricks Model Serving)")
+st.subheader("🤖 Demo Q&A (pre-canned, no LLM)")
 
-ai_endpoint = st.secrets.get("DBRICKS_AI_ENDPOINT")
-ai_token = st.secrets.get("DBRICKS_AI_TOKEN")
+# Define canned Q → SQL mappings
+CANNED = {
+    "How does total sales vary month over month?": f"""
+        SELECT DATE_TRUNC('month', order_date) AS month, SUM(sales) AS sales, SUM(profit) AS profit
+        FROM ({base_sql}) t
+        GROUP BY DATE_TRUNC('month', order_date)
+        ORDER BY month
+        LIMIT 120
+    """,
+    "What are the different product categories?": f"""
+        SELECT DISTINCT category FROM ({base_sql}) t
+        WHERE category IS NOT NULL
+        ORDER BY category
+    """,
+    "What is the total profit generated from all ecommerce orders?": f"""
+        SELECT SUM(profit) AS total_profit FROM ({base_sql}) t
+    """,
+    "Top 10 products by sales": f"""
+        SELECT product_name, SUM(sales) AS sales, SUM(profit) AS profit
+        FROM ({base_sql}) t
+        GROUP BY product_name
+        ORDER BY sales DESC
+        LIMIT 10
+    """,
+    "Sales by region": f"""
+        SELECT region, SUM(sales) AS sales, SUM(profit) AS profit
+        FROM ({base_sql}) t
+        GROUP BY region
+        ORDER BY sales DESC
+    """,
+    "Average discount and margin by sub-category": f"""
+        SELECT
+          sub_category,
+          AVG(COALESCE(discount,0)) AS avg_discount,
+          AVG(CASE WHEN sales != 0 THEN profit/sales ELSE NULL END) AS avg_margin
+        FROM ({base_sql}) t
+        GROUP BY sub_category
+        ORDER BY avg_margin DESC NULLS LAST
+    """,
+}
 
-help_text = (
-    "Describe what you want (e.g., 'monthly sales and profit by region for 2024, top 10'). "
-    "The assistant will propose SQL targeting the table "
-    f"`{FQTN}` using its columns: order_id, customer_id, customer_name, region, order_date, ship_date, "
-    "product_id, category, sub_category, product_name, quantity, unit_price, discount, sales, profit, latitude, longitude."
-)
+# Show quick-pick buttons
+st.caption("Try one of these:")
+btn_cols = st.columns(min(3, len(CANNED)))
+keys = list(CANNED.keys())
+for i, q in enumerate(keys):
+    with btn_cols[i % len(btn_cols)]:
+        if st.button(q, key=f"qbtn_{i}"):
+            st.session_state.setdefault("chat", [])
+            st.session_state["chat"].append(("user", q))
+            st.session_state["last_q"] = q
 
-if not (ai_endpoint and ai_token):
-    st.info("Configure **DBRICKS_AI_ENDPOINT** and **DBRICKS_AI_TOKEN** in Secrets to enable AI Generate.")
+# Free-text (will only run if it matches a canned question)
+user_q = st.text_input("Or type a question exactly as listed above")
+if st.button("Ask", key="ask_manual"):
+    if user_q in CANNED:
+        st.session_state.setdefault("chat", [])
+        st.session_state["chat"].append(("user", user_q))
+        st.session_state["last_q"] = user_q
+    else:
+        st.warning("For this demo, please click one of the suggested questions above (no LLM enabled).")
+
+# Render chat + run SQL for the latest question
+if "chat" in st.session_state and st.session_state["chat"]:
+    # Display history
+    for role, msg in st.session_state["chat"]:
+        if role == "user":
+            st.markdown(f"**You:** {msg}")
+        else:
+            st.markdown(f"**Assistant:** {msg}")
+
+    # If a new question was asked, answer it now
+    if "last_q" in st.session_state and st.session_state["last_q"]:
+        q = st.session_state["last_q"]
+        sql_text = CANNED[q]
+        st.markdown(f"**Assistant:** Here’s what I’d run for “_{q}_”.")
+        st.code(sql_text.strip(), language="sql")
+        df = run_query(sql_text, tuple(params))
+        if df.empty:
+            st.info("No rows returned for the current filters.")
+        else:
+            # Choose a simple viz per question
+            if "month over month" in q.lower():
+                ch = alt.Chart(df).mark_line().encode(
+                    x="month:T",
+                    y=alt.Y("sales:Q", title="Sales"),
+                    tooltip=["month:T", alt.Tooltip("sales:Q", format=",.2f"),
+                             alt.Tooltip("profit:Q", format=",.2f")],
+                ).interactive()
+                st.altair_chart(ch, use_container_width=True)
+            elif q == "Sales by region":
+                ch = alt.Chart(df).mark_bar().encode(
+                    x=alt.X("sales:Q", title="Sales"),
+                    y=alt.Y("region:N", sort="-x"),
+                    tooltip=["region", alt.Tooltip("sales:Q", format=",.2f"),
+                             alt.Tooltip("profit:Q", format=",.2f")],
+                )
+                st.altair_chart(ch, use_container_width=True)
+            else:
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # Clear last_q so re-renders don't rerun unnecessarily
+        st.session_state["last_q"] = ""
 else:
-    prompt = st.text_area("Ask in natural language", placeholder=help_text)
-    cold_start = st.checkbox("Execute generated SQL automatically", value=True)
-    if st.button("Generate SQL"):
-        # Build a grounded prompt for SQL generation
-        system = f"""
-You are a helpful SQL assistant for Databricks. Produce ANSI SQL that runs on Databricks SQL Warehouse.
-Use ONLY the table {FQTN} and its columns:
-order_id (string), customer_id (string), customer_name (string), region (string),
-order_date (date), ship_date (date), product_id (string), category (string),
-sub_category (string), product_name (string), quantity (bigint), unit_price (double),
-discount (double), sales (double), profit (double), latitude (string), longitude (string).
-Prefer safe filters and LIMIT 500 unless user asks for a larger sample. Do not use USE statements.
-Return SQL only, no explanations.
-"""
-        user = prompt or "Show total sales and profit by month, last 12 months."
-        headers = {
-            "Authorization": f"Bearer {ai_token}",
-            "Content-Type": "application/json",
-        }
-        body = {
-            # Many model serving endpoints accept 'input' or 'messages' — adapt to your endpoint.
-            "messages": [
-                {"role": "system", "content": system.strip()},
-                {"role": "user", "content": user.strip()},
-            ]
-        }
-        try:
-            resp = requests.post(ai_endpoint, headers=headers, data=json.dumps(body), timeout=60)
-            resp.raise_for_status()
-            out = resp.json()
-            # Try common response shapes
-            text = (
-                out.get("choices", [{}])[0].get("message", {}).get("content")
-                or out.get("output_text")
-                or out.get("text")
-                or ""
-            )
-            sql_generated = text.strip().strip("```").replace("sql\n", "").replace("SQL\n", "")
-            st.code(sql_generated, language="sql")
-
-            if cold_start and sql_generated:
-                st.write("Running generated SQL…")
-                df_ai = run_query(sql_generated)
-                if not df_ai.empty:
-                    st.dataframe(df_ai, use_container_width=True, hide_index=True)
-                else:
-                    st.info("No rows returned.")
-        except Exception:
-            st.error("AI request failed. Verify your serving endpoint URL, token, and request schema.")
+    st.info("Click one of the suggested questions above to see the demo in action.")
