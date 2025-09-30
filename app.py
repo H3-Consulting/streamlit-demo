@@ -238,6 +238,10 @@ def bootstrap_filters():
         # swallow errors and keep defaults
         pass
 
+    # if running offline, override to known demo range so filters aren’t empty
+    if offline_available():
+        min_d, max_d = get_offline_demo_date_bounds()
+    
     return min_d, max_d, regions, cats, subs
 
 # -----------------------------
