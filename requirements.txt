@@ -4,3 +4,4 @@ databricks-sql-connector
 pydeck
 altair
 requests
+duckdb
