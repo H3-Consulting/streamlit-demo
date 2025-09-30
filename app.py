@@ -30,7 +30,6 @@ def get_offline_demo_date_bounds():
     return pd.to_datetime("2023-01-01").date(), pd.to_datetime("2024-12-31").date()
 
 def _prep_duck():
-    """Create an in-memory DuckDB table from the CSV once."""
     con = duckdb.connect()
     con.execute(f"""
         CREATE OR REPLACE TABLE ecommerce_orders AS
@@ -39,18 +38,18 @@ def _prep_duck():
             customer_id::TEXT,
             customer_name::TEXT,
             region::TEXT,
-            TRY_CAST(order_date AS DATE) AS order_date,
-            TRY_CAST(ship_date  AS DATE) AS ship_date,
+            CAST(order_date AS DATE) AS order_date,
+            CAST(ship_date  AS DATE) AS ship_date,
             product_id::TEXT,
             category::TEXT,
             sub_category::TEXT,
             product_name::TEXT,
-            TRY_CAST(quantity   AS BIGINT) AS quantity,
-            TRY_CAST(unit_price AS DOUBLE) AS unit_price,
-            TRY_CAST(discount   AS DOUBLE) AS discount,
-            TRY_CAST(sales      AS DOUBLE) AS sales,
-            TRY_CAST(profit     AS DOUBLE) AS profit
-        FROM read_csv_auto('{OFFLINE_CSV}', IGNORE_ERRORS=true, HEADER=true)
+            CAST(quantity   AS BIGINT) AS quantity,
+            CAST(unit_price AS DOUBLE) AS unit_price,
+            CAST(discount   AS DOUBLE) AS discount,
+            CAST(sales      AS DOUBLE) AS sales,
+            CAST(profit     AS DOUBLE) AS profit
+        FROM read_csv_auto('{OFFLINE_CSV}', HEADER=TRUE, IGNORE_ERRORS=TRUE)
     """)
     return con
 
@@ -127,20 +126,30 @@ def run_query(q: str, params: tuple | None = None, force_offline: bool = False) 
                 rows = cur.fetchall()
         return pd.DataFrame.from_records(rows, columns=cols) if cols else pd.DataFrame()
 
-    def _exec_offline():
+    def _exec_offline(sql_text: str, params=None):
         global _duck_con
         if _duck_con is None:
-            if not offline_available():
-                st.error("Offline CSV not found at data/ecommerce_orders_sample.csv.")
-                return pd.DataFrame()
             _duck_con = _prep_duck()
-        # Rewrite table reference for DuckDB
-        q_duck = re.sub(r"\bsandbox\.ecommerce_orders\b", "ecommerce_orders", q, flags=re.IGNORECASE)
-        try:
-            return _duck_con.execute(q_duck).df()
-        except Exception as e:
-            st.error("Offline query failed. Check CSV and SQL compatibility.")
-            return pd.DataFrame()
+    
+        # Rewrite sandbox table → local table
+        q_duck = re.sub(r"\bsandbox\.ecommerce_orders\b", "ecommerce_orders", sql_text, flags=re.IGNORECASE)
+    
+        # Inline params if present (esp. for BETWEEN ? AND ?)
+        if params:
+            safe = []
+            for p in params:
+                if isinstance(p, (pd.Timestamp, pd.DatetimeIndex)):
+                    safe.append(f"DATE '{p.date()}'")
+                elif hasattr(p, "strftime"):
+                    safe.append(f"DATE '{p.strftime('%Y-%m-%d')}'")
+                elif isinstance(p, str):
+                    safe.append(f"'{p}'")
+                else:
+                    safe.append(str(p))
+            for s in safe:
+                q_duck = q_duck.replace("?", s, 1)
+    
+        return _duck_con.execute(q_duck).df()
 
     # fast path: offline forced
     if force_offline:
