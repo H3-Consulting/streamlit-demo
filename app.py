@@ -19,6 +19,7 @@ import re
 
 OFFLINE_CSV = "data/ecommerce_orders_sample.csv"
 _duck_con = None
+st.cache_data.clear()
 
 def offline_available() -> bool:
     return os.path.exists(OFFLINE_CSV)
@@ -28,25 +29,30 @@ def get_offline_demo_date_bounds():
     return pd.to_datetime("2023-01-01").date(), pd.to_datetime("2024-12-31").date()
 
 def _prep_duck():
+    """Create an in-memory DuckDB table from the CSV with correct column names."""
     con = duckdb.connect()
+    con.execute("DROP TABLE IF EXISTS ecommerce_orders")
     con.execute(f"""
-        CREATE OR REPLACE TABLE ecommerce_orders AS
+        CREATE TABLE ecommerce_orders AS
         SELECT
-            order_id::TEXT,
-            customer_id::TEXT,
-            customer_name::TEXT,
-            region::TEXT,
-            CAST(order_date AS DATE) AS order_date,
-            CAST(ship_date  AS DATE) AS ship_date,
-            product_id::TEXT,
-            category::TEXT,
-            sub_category::TEXT,
-            product_name::TEXT,
-            CAST(quantity   AS BIGINT) AS quantity,
-            CAST(unit_price AS DOUBLE) AS unit_price,
-            CAST(discount   AS DOUBLE) AS discount,
-            CAST(sales      AS DOUBLE) AS sales,
-            CAST(profit     AS DOUBLE) AS profit
+            CAST(order_id     AS VARCHAR) AS order_id,
+            CAST(customer_id  AS VARCHAR) AS customer_id,
+            CAST(customer_name AS VARCHAR) AS customer_name,
+            CAST(region       AS VARCHAR) AS region,
+            CAST(order_date   AS DATE)    AS order_date,
+            CAST(ship_date    AS DATE)    AS ship_date,
+            CAST(product_id   AS VARCHAR) AS product_id,
+            CAST(category     AS VARCHAR) AS category,
+            CAST(sub_category AS VARCHAR) AS sub_category,
+            CAST(product_name AS VARCHAR) AS product_name,
+            CAST(quantity     AS BIGINT)  AS quantity,
+            CAST(unit_price   AS DOUBLE)  AS unit_price,
+            CAST(discount     AS DOUBLE)  AS discount,
+            CAST(sales        AS DOUBLE)  AS sales,
+            CAST(profit       AS DOUBLE)  AS profit,
+            -- optional; present in some CSVs, safe if missing
+            TRY_CAST(latitude  AS DOUBLE) AS latitude,
+            TRY_CAST(longitude AS DOUBLE) AS longitude
         FROM read_csv_auto('{OFFLINE_CSV}', HEADER=TRUE, IGNORE_ERRORS=TRUE)
     """)
     return con
