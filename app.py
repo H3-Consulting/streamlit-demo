@@ -179,7 +179,6 @@ def run_query(q: str, params: tuple | None = None, force_offline: bool = False) 
                 except Exception:
                     pass
         if _looks_like_credit_exhausted(msg) or offline_available():
-            st.info("Running in **Offline Demo mode** (using CSV snapshot).")
             return _exec_offline(q, params)
 
         st.error("Query failed. Check warehouse status/permissions.")
