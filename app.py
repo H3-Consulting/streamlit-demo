@@ -10,6 +10,50 @@ from databricks import sql
 import requests
 from datetime import date, timedelta
 
+
+# -----------------------------
+# Warehouse helpers
+# -----------------------------
+
+def _warehouse_id_from_http_path(http_path: str) -> str:
+    # e.g. "/sql/1.0/warehouses/abcdef1234567890"
+    return http_path.strip("/").split("/")[-1]
+
+def start_warehouse_and_wait(max_wait_s: int = 120, poll_s: int = 5) -> bool:
+    host   = st.secrets["DATABRICKS_HOST"]
+    token  = st.secrets["DATABRICKS_TOKEN"]
+    wid    = _warehouse_id_from_http_path(st.secrets["DATABRICKS_HTTP_PATH"])
+    hdrs   = {"Authorization": f"Bearer {token}"}
+
+    # kick it
+    r = requests.post(f"https://{host}/api/2.0/sql/warehouses/{wid}/start", headers=hdrs)
+    if r.status_code not in (200, 202):
+        st.warning(f"Could not start warehouse: {r.text}")
+        return False
+
+    # poll status
+    t0 = time.time()
+    while time.time() - t0 < max_wait_s:
+        s = requests.get(f"https://{host}/api/2.0/sql/warehouses/{wid}", headers=hdrs)
+        if s.ok:
+            state = s.json().get("state")
+            if state == "RUNNING":
+                return True
+        time.sleep(poll_s)
+    st.warning("Warehouse start timed out.")
+    return False
+
+def _looks_like_warehouse_stopped(err_msg: str) -> bool:
+    m = err_msg.upper()
+    # common signals from connector / API
+    return any(x in m for x in [
+        "WAREHOUSE_SUSPENDED",
+        "ENDPOINT IS IN STOPPED STATE",
+        "WAREHOUSE IS STOPPED",
+        "ENDPOINT_NOT_RUNNING",
+        "FAILED TO ESTABLISH A NEW CONNECTION"
+    ])
+
 # -----------------------------
 # Page & Styles
 # -----------------------------
@@ -27,8 +71,8 @@ def connect():
     )
 
 @st.cache_data(ttl=300, show_spinner=False)
-def run_query(q: str, params: tuple | None = None) -> pd.DataFrame:
-    try:
+def run_query(q, params=None):
+    def _exec():
         with connect() as conn:
             with conn.cursor() as cur:
                 if params:
@@ -38,10 +82,24 @@ def run_query(q: str, params: tuple | None = None) -> pd.DataFrame:
                 cols = [c[0] for c in cur.description] if cur.description else []
                 rows = cur.fetchall()
         return pd.DataFrame.from_records(rows, columns=cols) if cols else pd.DataFrame()
-    except Exception:
-        # Keep errors generic to avoid leaking details
-        st.error("Query failed. Check Warehouse status/permissions and try again.")
+
+    try:
+        return _exec()
+    except Exception as e:
+        msg = str(e)
+        # Try to wake the warehouse once
+        if _looks_like_warehouse_stopped(msg):
+            st.info("Waking the SQL Warehouse…")
+            if start_warehouse_and_wait():
+                try:
+                    return _exec()
+                except Exception as e2:
+                    st.error("Query failed after warehouse start. Check permissions or logs.")
+                    return pd.DataFrame()
+        # Fallback: generic error
+        st.error("Query failed. Verify Warehouse status/permissions and try again.")
         return pd.DataFrame()
+
 
 # -----------------------------
 # Schema constants (adjust if your catalog/schema differ)
@@ -88,6 +146,14 @@ with st.sidebar:
     st.divider()
     st.subheader("Query Options")
     limit_rows = st.slider("Row limit (tables)", 100, 10000, 1000, step=100)
+
+    st.divider()
+    if st.button("🔌 Start Warehouse"):
+        ok = start_warehouse_and_wait()
+        if ok:
+            st.success("Warehouse is running.")
+        else:
+            st.error("Could not start warehouse — check permissions or token.")
 
 start_date, end_date = (drange if isinstance(drange, tuple) else (min_d, max_d))
 
