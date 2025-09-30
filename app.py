@@ -9,7 +9,51 @@ import streamlit as st
 from databricks import sql
 import requests
 from datetime import date, timedelta
+import duckdb
+import re
 
+
+# -----------------------------
+# csv fallback
+# -----------------------------
+
+OFFLINE_CSV = "data/ecommerce_orders_sample.csv"
+
+def _offline_available() -> bool:
+    return os.path.exists(OFFLINE_CSV)
+
+def _prep_duck():
+    con = duckdb.connect()
+    # Infer schema and cast types for dates/numbers
+    con.execute(f"""
+        CREATE OR REPLACE TABLE ecommerce_orders AS
+        SELECT
+            order_id::TEXT,
+            customer_id::TEXT,
+            customer_name::TEXT,
+            region::TEXT,
+            CAST(order_date AS DATE) AS order_date,
+            CAST(ship_date  AS DATE) AS ship_date,
+            product_id::TEXT,
+            category::TEXT,
+            sub_category::TEXT,
+            product_name::TEXT,
+            CAST(quantity   AS BIGINT) AS quantity,
+            CAST(unit_price AS DOUBLE) AS unit_price,
+            CAST(discount   AS DOUBLE) AS discount,
+            CAST(sales      AS DOUBLE) AS sales,
+            CAST(profit     AS DOUBLE) AS profit,
+            /* lat/long may not exist in CSV; ignore if missing */
+            TRY_CAST(latitude  AS DOUBLE) AS latitude,
+            TRY_CAST(longitude AS DOUBLE) AS longitude
+        FROM read_csv_auto('{OFFLINE_CSV}', IGNORE_ERRORS=true)
+    """)
+    return con
+
+_duck_con = None
+
+def _looks_like_credit_exhausted(msg: str) -> bool:
+    return "COMMUNITY_EDITION_CREDIT_EXHAUSTED" in msg or "FREE DAILY LIMIT" in msg.upper()
 
 # -----------------------------
 # Warehouse helpers
@@ -72,34 +116,42 @@ def connect():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def run_query(q, params=None):
-    def _exec():
+    def _exec_live():
         with connect() as conn:
             with conn.cursor() as cur:
-                if params:
-                    cur.execute(q, params)
-                else:
-                    cur.execute(q)
+                if params: cur.execute(q, params)
+                else:      cur.execute(q)
                 cols = [c[0] for c in cur.description] if cur.description else []
                 rows = cur.fetchall()
         return pd.DataFrame.from_records(rows, columns=cols) if cols else pd.DataFrame()
 
+    def _exec_offline():
+        global _duck_con
+        if _duck_con is None:
+            _duck_con = _prep_duck()
+        # Map Databricks FQTN -> local table name
+        q_duck = re.sub(r"\bsandbox\.ecommerce_orders\b", "ecommerce_orders", q, flags=re.IGNORECASE)
+        return _duck_con.execute(q_duck).df()
+
     try:
-        return _exec()
+        return _exec_live()
     except Exception as e:
         msg = str(e)
-        # Try to wake the warehouse once
-        if _looks_like_warehouse_stopped(msg):
-            st.info("Waking the SQL Warehouse…")
-            if start_warehouse_and_wait():
+        # If the warehouse is stopped or credits exhausted, try offline
+        if _looks_like_credit_exhausted(msg) or _looks_like_warehouse_stopped(msg):
+            if _offline_available():
+                st.info("Running in **Offline Demo mode** (using CSV snapshot).")
                 try:
-                    return _exec()
-                except Exception as e2:
-                    st.error("Query failed after warehouse start. Check permissions or logs.")
+                    return _exec_offline()
+                except Exception:
+                    st.error("Offline query failed. Check CSV and SQL compatibility.")
                     return pd.DataFrame()
-        # Fallback: generic error
-        st.error("Query failed. Verify Warehouse status/permissions and try again.")
+            else:
+                st.error("Warehouse unavailable and no offline CSV found. Add data/ecommerce_orders_sample.csv.")
+                return pd.DataFrame()
+        # Generic failure
+        st.error("Query failed. Check warehouse status/permissions.")
         return pd.DataFrame()
-
 
 # -----------------------------
 # Schema constants (adjust if your catalog/schema differ)
@@ -178,6 +230,9 @@ with st.sidebar:
             st.success("Warehouse is running.")
         else:
             st.error("Could not start warehouse — check permissions or token.")
+
+    force_offline = st.checkbox("Force Offline Demo (CSV)", value=False)
+
 
 start_date, end_date = (drange if isinstance(drange, tuple) else (min_d, max_d))
 
