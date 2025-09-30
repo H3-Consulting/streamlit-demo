@@ -17,16 +17,14 @@ import re
 # csv fallback
 # -----------------------------
 
-OFFLINE_CSV = "data/ecommerce_orders_sample.csv"  # put your CSV here
-_duck_con = None                                   # cached DuckDB connection
+OFFLINE_CSV = "data/ecommerce_orders_sample.csv"
+_duck_con = None
 
 def offline_available() -> bool:
     return os.path.exists(OFFLINE_CSV)
 
 def get_offline_demo_date_bounds():
-    """Use this inside bootstrap when in offline mode to avoid empty ranges."""
-    # Match the synthetic CSV I generated (2023-01-01..2024-12-31).
-    # Adjust if your CSV has a different range.
+    # adjust if your CSV has a different range
     return pd.to_datetime("2023-01-01").date(), pd.to_datetime("2024-12-31").date()
 
 def _prep_duck():
@@ -69,7 +67,6 @@ def _looks_like_credit_exhausted(msg: str) -> bool:
     return "COMMUNITY_EDITION_CREDIT_EXHAUSTED" in m or "FREE DAILY LIMIT" in m
 
 def start_warehouse_and_wait(max_wait_s: int = 120, poll_s: int = 5) -> bool:
-    """Start the SQL Warehouse via REST and poll for RUNNING."""
     host   = st.secrets["DATABRICKS_HOST"]
     token  = st.secrets["DATABRICKS_TOKEN"]
     wid    = _warehouse_id_from_http_path(st.secrets["DATABRICKS_HTTP_PATH"])
@@ -88,7 +85,7 @@ def start_warehouse_and_wait(max_wait_s: int = 120, poll_s: int = 5) -> bool:
         time.sleep(poll_s)
     st.warning("Warehouse start timed out.")
     return False
-
+    
 # -----------------------------
 # Page & Styles
 # -----------------------------
@@ -107,12 +104,8 @@ def connect():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def run_query(q: str, params: tuple | None = None, force_offline: bool = False) -> pd.DataFrame:
-    """
-    Try live Databricks first (unless force_offline=True).
-    On 'warehouse stopped' or 'free credit exhausted', fall back to DuckDB CSV.
-    Also rewrites FQTN 'sandbox.ecommerce_orders' -> 'ecommerce_orders' in offline mode.
-    """
-    # inner executors
+    """Try live Databricks; on stopped/credit-exhausted, fall back to DuckDB CSV."""
+    # --- live executor ---
     def _exec_live():
         from databricks import sql
         with sql.connect(
@@ -126,42 +119,47 @@ def run_query(q: str, params: tuple | None = None, force_offline: bool = False) 
                 rows = cur.fetchall()
         return pd.DataFrame.from_records(rows, columns=cols) if cols else pd.DataFrame()
 
-    def _exec_offline(sql_text: str, params=None):
+    # --- offline executor ---
+    def _exec_offline(sql_text: str, sql_params: tuple | None):
         global _duck_con
         if _duck_con is None:
+            if not offline_available():
+                st.error("Offline CSV not found at data/ecommerce_orders_sample.csv.")
+                return pd.DataFrame()
             _duck_con = _prep_duck()
-    
-        # Rewrite sandbox table → local table
-        q_duck = re.sub(r"\bsandbox\.ecommerce_orders\b", "ecommerce_orders", sql_text, flags=re.IGNORECASE)
-    
-        # Inline params if present (esp. for BETWEEN ? AND ?)
-        if params:
-            safe = []
-            for p in params:
-                if isinstance(p, (pd.Timestamp, pd.DatetimeIndex)):
-                    safe.append(f"DATE '{p.date()}'")
-                elif hasattr(p, "strftime"):
-                    safe.append(f"DATE '{p.strftime('%Y-%m-%d')}'")
-                elif isinstance(p, str):
-                    safe.append(f"'{p}'")
-                else:
-                    safe.append(str(p))
-            for s in safe:
-                q_duck = q_duck.replace("?", s, 1)
-    
-        return _duck_con.execute(q_duck).df()
 
-    # fast path: offline forced
+        # rewrite FQTN → local table name
+        sql_duck = re.sub(r"\bsandbox\.ecommerce_orders\b", "ecommerce_orders", sql_text, flags=re.IGNORECASE)
+
+        # inline ? params (dates/strings/numbers)
+        if sql_params:
+            safe_vals = []
+            for p in sql_params:
+                if isinstance(p, (pd.Timestamp,)):
+                    safe_vals.append(f"DATE '{p.date()}'")
+                elif hasattr(p, "strftime"):  # date/datetime
+                    safe_vals.append(f"DATE '{p.strftime('%Y-%m-%d')}'")
+                elif isinstance(p, date):
+                    safe_vals.append(f"DATE '{p.strftime('%Y-%m-%d')}'")
+                elif isinstance(p, str):
+                    safe_vals.append("'" + p.replace("'", "''") + "'")
+                else:
+                    safe_vals.append(str(p))
+            for v in safe_vals:
+                sql_duck = sql_duck.replace("?", v, 1)
+
+        return _duck_con.execute(sql_duck).df()
+
+    # force offline (checkbox)
     if force_offline:
         st.info("Running in **Offline Demo mode** (using CSV snapshot).")
-        return _exec_offline()
+        return _exec_offline(q, params)
 
-    # live path with one auto-start + retry
+    # live path with one auto-start + retry, then offline fallback
     try:
         return _exec_live()
     except Exception as e:
         msg = str(e)
-        # try to wake warehouse unless credits are exhausted
         if _looks_like_warehouse_stopped(msg):
             st.info("Waking the SQL Warehouse…")
             if start_warehouse_and_wait():
@@ -169,10 +167,9 @@ def run_query(q: str, params: tuple | None = None, force_offline: bool = False) 
                     return _exec_live()
                 except Exception:
                     pass
-        # fall back to offline if credits hit or still failing
         if _looks_like_credit_exhausted(msg) or offline_available():
             st.info("Running in **Offline Demo mode** (using CSV snapshot).")
-            return _exec_offline()
+            return _exec_offline(q, params)
 
         st.error("Query failed. Check warehouse status/permissions.")
         return pd.DataFrame()
