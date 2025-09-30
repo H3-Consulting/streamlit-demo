@@ -98,6 +98,12 @@ def start_warehouse_and_wait(max_wait_s: int = 120, poll_s: int = 5) -> bool:
 st.set_page_config(page_title="E-Commerce Analytics (Databricks)", layout="wide")
 st.title("🛍️ E-Commerce Analytics — Databricks")
 
+if offline_available() and force_offline:
+    st.markdown(
+        "<span style='color:deepskyblue; font-weight:bold'>Offline Demo Mode (CSV snapshot)</span>",
+        unsafe_allow_html=True
+    )
+
 # -----------------------------
 # Connection helpers
 # -----------------------------
@@ -158,7 +164,6 @@ def run_query(q: str, params: tuple | None = None, force_offline: bool = False) 
 
     # force offline (checkbox)
     if force_offline:
-        st.info("Running in **Offline Demo mode** (using CSV snapshot).")
         return _exec_offline(q, params)
 
     # live path with one auto-start + retry, then offline fallback
