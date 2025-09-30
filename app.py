@@ -109,38 +109,47 @@ TABLE = "ecommerce_orders"   # columns from your screenshot
 
 FQTN = f"{CATALOG}.{TABLE}"
 
+try:
+    min_d, max_d, regions, cats, subs = bootstrap_filters()
+except Exception:
+    min_d, max_d, regions, cats, subs = date(2021, 1, 1), date.today(), [], [], []
+
+# If min_d somehow ends up after max_d, swap them
+if min_d > max_d:
+    min_d, max_d = max_d, min_d
+
 # -----------------------------
 # Load basic ranges for filters
 # -----------------------------
 @st.cache_data(ttl=300)
 def bootstrap_filters():
-    # Helper: case-insensitive column access
-    def col(df, name):
-        if df is None or df.empty:
-            return None
-        # map lower -> actual
-        m = {c.lower(): c for c in df.columns}
-        return m.get(name.lower())
+    def safe_cols(df):
+        return {c.lower(): c for c in df.columns} if (df is not None and not df.empty) else {}
 
-    # --- dates (safe defaults if query fails/sleeps) ---
-    meta = run_query(f"SELECT MIN(order_date) AS min_date, MAX(order_date) AS max_date FROM {FQTN}")
-    if meta.empty or col(meta, "min_date") is None or col(meta, "max_date") is None:
-        min_d, max_d = date(2021, 1, 1), date.today()
-    else:
-        min_d = pd.to_datetime(meta[col(meta, "min_date")][0]).date() if not pd.isna(meta[col(meta, "min_date")][0]) else date(2021,1,1)
-        max_d = pd.to_datetime(meta[col(meta, "max_date")][0]).date() if not pd.isna(meta[col(meta, "max_date")][0]) else date.today()
+    # Defaults if the warehouse is sleeping or query fails
+    min_d, max_d = date(2021, 1, 1), date.today()
+    regions, cats, subs = [], [], []
 
-    # --- distinct lists (never KeyError) ---
-    def distinct_list(column_name):
-        df = run_query(f"SELECT DISTINCT {column_name} AS val FROM {FQTN} WHERE {column_name} IS NOT NULL ORDER BY 1")
-        if df.empty:
-            return []
-        actual = col(df, "val") or col(df, column_name)
-        return df[actual].dropna().tolist() if actual in df.columns else []
+    try:
+        meta = run_query(f"SELECT MIN(order_date) AS min_date, MAX(order_date) AS max_date FROM {FQTN}")
+        m = safe_cols(meta)
+        if meta is not None and not meta.empty and "min_date" in m and "max_date" in m:
+            md = meta[m["min_date"]][0]
+            xd = meta[m["max_date"]][0]
+            if pd.notna(md): min_d = pd.to_datetime(md).date()
+            if pd.notna(xd): max_d = pd.to_datetime(xd).date()
 
-    regions = distinct_list("region")
-    cats    = distinct_list("category")
-    subs    = distinct_list("sub_category")
+        def distinct(col):
+            df = run_query(f"SELECT DISTINCT {col} AS v FROM {FQTN} WHERE {col} IS NOT NULL ORDER BY 1")
+            mm = safe_cols(df)
+            return df[mm.get("v", col)].dropna().tolist() if df is not None and not df.empty else []
+
+        regions = distinct("region")
+        cats    = distinct("category")
+        subs    = distinct("sub_category")
+    except Exception:
+        # swallow errors and keep defaults
+        pass
 
     return min_d, max_d, regions, cats, subs
 
