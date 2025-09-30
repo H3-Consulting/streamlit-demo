@@ -17,14 +17,21 @@ import re
 # csv fallback
 # -----------------------------
 
-OFFLINE_CSV = "data/ecommerce_orders_sample.csv"
+OFFLINE_CSV = "data/ecommerce_orders_sample.csv"  # put your CSV here
+_duck_con = None                                   # cached DuckDB connection
 
-def _offline_available() -> bool:
+def offline_available() -> bool:
     return os.path.exists(OFFLINE_CSV)
 
+def get_offline_demo_date_bounds():
+    """Use this inside bootstrap when in offline mode to avoid empty ranges."""
+    # Match the synthetic CSV I generated (2023-01-01..2024-12-31).
+    # Adjust if your CSV has a different range.
+    return pd.to_datetime("2023-01-01").date(), pd.to_datetime("2024-12-31").date()
+
 def _prep_duck():
+    """Create an in-memory DuckDB table from the CSV once."""
     con = duckdb.connect()
-    # Infer schema and cast types for dates/numbers
     con.execute(f"""
         CREATE OR REPLACE TABLE ecommerce_orders AS
         SELECT
@@ -32,71 +39,56 @@ def _prep_duck():
             customer_id::TEXT,
             customer_name::TEXT,
             region::TEXT,
-            CAST(order_date AS DATE) AS order_date,
-            CAST(ship_date  AS DATE) AS ship_date,
+            TRY_CAST(order_date AS DATE) AS order_date,
+            TRY_CAST(ship_date  AS DATE) AS ship_date,
             product_id::TEXT,
             category::TEXT,
             sub_category::TEXT,
             product_name::TEXT,
-            CAST(quantity   AS BIGINT) AS quantity,
-            CAST(unit_price AS DOUBLE) AS unit_price,
-            CAST(discount   AS DOUBLE) AS discount,
-            CAST(sales      AS DOUBLE) AS sales,
-            CAST(profit     AS DOUBLE) AS profit,
-            /* lat/long may not exist in CSV; ignore if missing */
-            TRY_CAST(latitude  AS DOUBLE) AS latitude,
-            TRY_CAST(longitude AS DOUBLE) AS longitude
-        FROM read_csv_auto('{OFFLINE_CSV}', IGNORE_ERRORS=true)
+            TRY_CAST(quantity   AS BIGINT) AS quantity,
+            TRY_CAST(unit_price AS DOUBLE) AS unit_price,
+            TRY_CAST(discount   AS DOUBLE) AS discount,
+            TRY_CAST(sales      AS DOUBLE) AS sales,
+            TRY_CAST(profit     AS DOUBLE) AS profit
+        FROM read_csv_auto('{OFFLINE_CSV}', IGNORE_ERRORS=true, HEADER=true)
     """)
     return con
 
-_duck_con = None
-
-def _looks_like_credit_exhausted(msg: str) -> bool:
-    return "COMMUNITY_EDITION_CREDIT_EXHAUSTED" in msg or "FREE DAILY LIMIT" in msg.upper()
-
-# -----------------------------
-# Warehouse helpers
-# -----------------------------
-
 def _warehouse_id_from_http_path(http_path: str) -> str:
-    # e.g. "/sql/1.0/warehouses/abcdef1234567890"
     return http_path.strip("/").split("/")[-1]
 
+def _looks_like_warehouse_stopped(msg: str) -> bool:
+    m = msg.upper()
+    return any(x in m for x in [
+        "WAREHOUSE_SUSPENDED", "ENDPOINT IS IN STOPPED STATE",
+        "WAREHOUSE IS STOPPED", "ENDPOINT_NOT_RUNNING",
+        "FAILED TO ESTABLISH A NEW CONNECTION"
+    ])
+
+def _looks_like_credit_exhausted(msg: str) -> bool:
+    m = msg.upper()
+    return "COMMUNITY_EDITION_CREDIT_EXHAUSTED" in m or "FREE DAILY LIMIT" in m
+
 def start_warehouse_and_wait(max_wait_s: int = 120, poll_s: int = 5) -> bool:
+    """Start the SQL Warehouse via REST and poll for RUNNING."""
     host   = st.secrets["DATABRICKS_HOST"]
     token  = st.secrets["DATABRICKS_TOKEN"]
     wid    = _warehouse_id_from_http_path(st.secrets["DATABRICKS_HTTP_PATH"])
     hdrs   = {"Authorization": f"Bearer {token}"}
 
-    # kick it
     r = requests.post(f"https://{host}/api/2.0/sql/warehouses/{wid}/start", headers=hdrs)
     if r.status_code not in (200, 202):
         st.warning(f"Could not start warehouse: {r.text}")
         return False
 
-    # poll status
     t0 = time.time()
     while time.time() - t0 < max_wait_s:
         s = requests.get(f"https://{host}/api/2.0/sql/warehouses/{wid}", headers=hdrs)
-        if s.ok:
-            state = s.json().get("state")
-            if state == "RUNNING":
-                return True
+        if s.ok and s.json().get("state") == "RUNNING":
+            return True
         time.sleep(poll_s)
     st.warning("Warehouse start timed out.")
     return False
-
-def _looks_like_warehouse_stopped(err_msg: str) -> bool:
-    m = err_msg.upper()
-    # common signals from connector / API
-    return any(x in m for x in [
-        "WAREHOUSE_SUSPENDED",
-        "ENDPOINT IS IN STOPPED STATE",
-        "WAREHOUSE IS STOPPED",
-        "ENDPOINT_NOT_RUNNING",
-        "FAILED TO ESTABLISH A NEW CONNECTION"
-    ])
 
 # -----------------------------
 # Page & Styles
@@ -115,12 +107,22 @@ def connect():
     )
 
 @st.cache_data(ttl=300, show_spinner=False)
-def run_query(q, params=None):
+def run_query(q: str, params: tuple | None = None, force_offline: bool = False) -> pd.DataFrame:
+    """
+    Try live Databricks first (unless force_offline=True).
+    On 'warehouse stopped' or 'free credit exhausted', fall back to DuckDB CSV.
+    Also rewrites FQTN 'sandbox.ecommerce_orders' -> 'ecommerce_orders' in offline mode.
+    """
+    # inner executors
     def _exec_live():
-        with connect() as conn:
+        from databricks import sql
+        with sql.connect(
+            server_hostname=st.secrets["DATABRICKS_HOST"],
+            http_path=st.secrets["DATABRICKS_HTTP_PATH"],
+            access_token=st.secrets["DATABRICKS_TOKEN"],
+        ) as conn:
             with conn.cursor() as cur:
-                if params: cur.execute(q, params)
-                else:      cur.execute(q)
+                cur.execute(q, params) if params else cur.execute(q)
                 cols = [c[0] for c in cur.description] if cur.description else []
                 rows = cur.fetchall()
         return pd.DataFrame.from_records(rows, columns=cols) if cols else pd.DataFrame()
@@ -128,31 +130,44 @@ def run_query(q, params=None):
     def _exec_offline():
         global _duck_con
         if _duck_con is None:
+            if not offline_available():
+                st.error("Offline CSV not found at data/ecommerce_orders_sample.csv.")
+                return pd.DataFrame()
             _duck_con = _prep_duck()
-        # Map Databricks FQTN -> local table name
+        # Rewrite table reference for DuckDB
         q_duck = re.sub(r"\bsandbox\.ecommerce_orders\b", "ecommerce_orders", q, flags=re.IGNORECASE)
-        return _duck_con.execute(q_duck).df()
+        try:
+            return _duck_con.execute(q_duck).df()
+        except Exception as e:
+            st.error("Offline query failed. Check CSV and SQL compatibility.")
+            return pd.DataFrame()
 
+    # fast path: offline forced
+    if force_offline:
+        st.info("Running in **Offline Demo mode** (using CSV snapshot).")
+        return _exec_offline()
+
+    # live path with one auto-start + retry
     try:
         return _exec_live()
     except Exception as e:
         msg = str(e)
-        # If the warehouse is stopped or credits exhausted, try offline
-        if _looks_like_credit_exhausted(msg) or _looks_like_warehouse_stopped(msg):
-            if _offline_available():
-                st.info("Running in **Offline Demo mode** (using CSV snapshot).")
+        # try to wake warehouse unless credits are exhausted
+        if _looks_like_warehouse_stopped(msg):
+            st.info("Waking the SQL Warehouse…")
+            if start_warehouse_and_wait():
                 try:
-                    return _exec_offline()
+                    return _exec_live()
                 except Exception:
-                    st.error("Offline query failed. Check CSV and SQL compatibility.")
-                    return pd.DataFrame()
-            else:
-                st.error("Warehouse unavailable and no offline CSV found. Add data/ecommerce_orders_sample.csv.")
-                return pd.DataFrame()
-        # Generic failure
+                    pass
+        # fall back to offline if credits hit or still failing
+        if _looks_like_credit_exhausted(msg) or offline_available():
+            st.info("Running in **Offline Demo mode** (using CSV snapshot).")
+            return _exec_offline()
+
         st.error("Query failed. Check warehouse status/permissions.")
         return pd.DataFrame()
-
+        
 # -----------------------------
 # Schema constants (adjust if your catalog/schema differ)
 # -----------------------------
@@ -169,6 +184,10 @@ except Exception:
 # If min_d somehow ends up after max_d, swap them
 if min_d > max_d:
     min_d, max_d = max_d, min_d
+
+# if running offline, override to known demo range so filters aren’t empty
+if offline_available():
+    min_d, max_d = get_offline_demo_date_bounds()
 
 # -----------------------------
 # Load basic ranges for filters
