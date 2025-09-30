@@ -391,7 +391,7 @@ with left:
         line_profit = alt.Chart(ts_df).mark_line(strokeDash=[4,3]).encode(
             x="order_date:T", y=alt.Y("profit:Q", title="Profit")
         )
-        st.altair_chart((line_sales + line_profit).interactive(), use_container_width=True)
+        st.altair_chart((line_sales + line_profit).interactive(), width="stretch")
     else:
         st.write("—")
 
@@ -403,7 +403,7 @@ with right:
             y=alt.Y("category:N", sort="-x", title="Category"),
             tooltip=["category","sales","profit"]
         )
-        st.altair_chart(bar.properties(height=300), use_container_width=True)
+        st.altair_chart(bar.properties(height=300), width="stretch")
     else:
         st.write("—")
 
@@ -432,7 +432,7 @@ with col1:
             color=alt.Color("region:N", title="Region"),
             tooltip=["order_date:T", "region:N", alt.Tooltip("sales:Q", format=",.2f")]
         ).interactive()
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
     else:
         st.write("—")
 
@@ -453,7 +453,7 @@ with col2:
             tooltip=[alt.Tooltip("count():Q", title="Orders")]
         )
         rule = alt.Chart(pd.DataFrame({"m":[float(margins["margin"].mean())]})).mark_rule().encode(x="m:Q")
-        st.altair_chart((hist + rule), use_container_width=True)
+        st.altair_chart((hist + rule), width="stretch")
     else:
         st.write("—")
 
@@ -473,7 +473,7 @@ if not disc_profit.empty:
         tooltip=[alt.Tooltip("discount:Q", format=".2f"), alt.Tooltip("profit:Q", format=",.2f"), alt.Tooltip("sales:Q", format=",.2f")]
     )
     trend = scatter.transform_regression("discount", "profit").mark_line()
-    st.altair_chart(scatter + trend, use_container_width=True)
+    st.altair_chart(scatter + trend, width="stretch")
 else:
     st.write("—")
 
@@ -507,7 +507,7 @@ if not top_prod_full.empty:
         tooltip=[alt.Tooltip("cum_pct:Q", title="Cum %", format=".0%")]
     )
 
-    st.altair_chart(alt.layer(bars, line).resolve_scale(y="independent"), use_container_width=True)
+    st.altair_chart(alt.layer(bars, line).resolve_scale(y="independent"), width="stretch")
 else:
     st.write("—")
 
@@ -528,7 +528,7 @@ if not heat.empty:
         color=alt.Color("sales:Q", title="Sales", scale=alt.Scale(type="linear")),
         tooltip=["category","sub_category", alt.Tooltip("sales:Q", format=",.2f")]
     ).properties(height=260)
-    st.altair_chart(hm, use_container_width=True)
+    st.altair_chart(hm, width="stretch")
 else:
     st.write("—")
 
@@ -536,7 +536,7 @@ else:
 # Data table
 # -----------------------------
 st.markdown("#### Recent Orders")
-st.dataframe(sample, use_container_width=True, hide_index=True)
+st.dataframe(sample, width="stretch", hide_index=True)
 
 # =========================================================
 # AI Chat Example
@@ -633,7 +633,7 @@ if "chat" in st.session_state and st.session_state["chat"]:
                     tooltip=["month:T", alt.Tooltip("sales:Q", format=",.2f"),
                              alt.Tooltip("profit:Q", format=",.2f")],
                 ).interactive()
-                st.altair_chart(ch, use_container_width=True)
+                st.altair_chart(ch, width="stretch")
             elif q == "Sales by region":
                 ch = alt.Chart(df).mark_bar().encode(
                     x=alt.X("sales:Q", title="Sales"),
@@ -641,9 +641,9 @@ if "chat" in st.session_state and st.session_state["chat"]:
                     tooltip=["region", alt.Tooltip("sales:Q", format=",.2f"),
                              alt.Tooltip("profit:Q", format=",.2f")],
                 )
-                st.altair_chart(ch, use_container_width=True)
+                st.altair_chart(ch, width="stretch")
             else:
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width="stretch", hide_index=True)
 
         # Clear last_q so re-renders don't rerun unnecessarily
         st.session_state["last_q"] = ""
