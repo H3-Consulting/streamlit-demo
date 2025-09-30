@@ -114,20 +114,35 @@ FQTN = f"{CATALOG}.{TABLE}"
 # -----------------------------
 @st.cache_data(ttl=300)
 def bootstrap_filters():
-    meta = run_query(f"""
-        SELECT
-          MIN(order_date) AS min_date,
-          MAX(order_date) AS max_date
-        FROM {FQTN}
-    """)
-    min_d = pd.to_datetime(meta["min_date"][0]).date() if not meta.empty else date(2021,1,1)
-    max_d = pd.to_datetime(meta["max_date"][0]).date() if not meta.empty else date.today()
-    regions = run_query(f"SELECT DISTINCT region FROM {FQTN} WHERE region IS NOT NULL ORDER BY 1")
-    cats    = run_query(f"SELECT DISTINCT category FROM {FQTN} WHERE category IS NOT NULL ORDER BY 1")
-    subs    = run_query(f"SELECT DISTINCT sub_category FROM {FQTN} WHERE sub_category IS NOT NULL ORDER BY 1")
-    return min_d, max_d, regions["region"].tolist(), cats["category"].tolist(), subs["sub_category"].tolist()
+    # Helper: case-insensitive column access
+    def col(df, name):
+        if df is None or df.empty:
+            return None
+        # map lower -> actual
+        m = {c.lower(): c for c in df.columns}
+        return m.get(name.lower())
 
-min_d, max_d, regions, cats, subs = bootstrap_filters()
+    # --- dates (safe defaults if query fails/sleeps) ---
+    meta = run_query(f"SELECT MIN(order_date) AS min_date, MAX(order_date) AS max_date FROM {FQTN}")
+    if meta.empty or col(meta, "min_date") is None or col(meta, "max_date") is None:
+        min_d, max_d = date(2021, 1, 1), date.today()
+    else:
+        min_d = pd.to_datetime(meta[col(meta, "min_date")][0]).date() if not pd.isna(meta[col(meta, "min_date")][0]) else date(2021,1,1)
+        max_d = pd.to_datetime(meta[col(meta, "max_date")][0]).date() if not pd.isna(meta[col(meta, "max_date")][0]) else date.today()
+
+    # --- distinct lists (never KeyError) ---
+    def distinct_list(column_name):
+        df = run_query(f"SELECT DISTINCT {column_name} AS val FROM {FQTN} WHERE {column_name} IS NOT NULL ORDER BY 1")
+        if df.empty:
+            return []
+        actual = col(df, "val") or col(df, column_name)
+        return df[actual].dropna().tolist() if actual in df.columns else []
+
+    regions = distinct_list("region")
+    cats    = distinct_list("category")
+    subs    = distinct_list("sub_category")
+
+    return min_d, max_d, regions, cats, subs
 
 # -----------------------------
 # Sidebar filters
