@@ -205,13 +205,6 @@ if min_d > max_d:
 if offline_available():
     min_d, max_d = get_offline_demo_date_bounds()
 
-if force_offline:
-    # Match your CSV (adjust if yours differs)
-    csv_min, csv_max = get_offline_demo_date_bounds()  # 2023-01-01 .. 2024-12-31 in our sample
-    # If current selection is outside the CSV, pull it back in
-    if not (csv_min <= min_d <= csv_max): min_d = csv_min
-    if not (csv_min <= max_d <= csv_max): max_d = csv_max
-
 # -----------------------------
 # Load basic ranges for filters
 # -----------------------------
@@ -281,6 +274,13 @@ with st.sidebar:
 
 
 start_date, end_date = (drange if isinstance(drange, tuple) else (min_d, max_d))
+
+if force_offline:
+    # Match your CSV (adjust if yours differs)
+    csv_min, csv_max = get_offline_demo_date_bounds()  # 2023-01-01 .. 2024-12-31 in our sample
+    # If current selection is outside the CSV, pull it back in
+    if not (csv_min <= min_d <= csv_max): min_d = csv_min
+    if not (csv_min <= max_d <= csv_max): max_d = csv_max
 
 # -----------------------------
 # Build WHERE clause safely
