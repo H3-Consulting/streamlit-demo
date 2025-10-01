@@ -195,81 +195,69 @@ FQTN = f"{CATALOG}.{TABLE}"
 # -----------------------------
 # Load basic ranges for filters
 # -----------------------------
+force_offline = st.sidebar.checkbox("Use Offline Demo (CSV snapshot)", value=True)
+
+# ===== 2) Bootstrap filters (now we can pass force_offline) =====
 @st.cache_data(ttl=300)
 def bootstrap_filters(force_offline=False):
     if force_offline and offline_available():
-        # Use static CSV ranges and distincts
         csv_min, csv_max = get_offline_demo_date_bounds()
-        df = pd.read_csv(OFFLINE_CSV)
-
-        regions = sorted(df["region"].dropna().unique().tolist())
-        cats    = sorted(df["category"].dropna().unique().tolist())
-        subs    = sorted(df["sub_category"].dropna().unique().tolist())
-
+        df = pd.read_csv( OFFLINE_CSV )
+        regions = sorted(df["region"].dropna().unique().tolist()) if "region" in df else []
+        cats    = sorted(df["category"].dropna().unique().tolist()) if "category" in df else []
+        subs    = sorted(df["sub_category"].dropna().unique().tolist()) if "sub_category" in df else []
         return csv_min, csv_max, regions, cats, subs
 
-    # --- otherwise, query Databricks ---
-    meta = run_query("SELECT MIN(order_date), MAX(order_date) FROM sandbox.ecommerce_orders")
-    min_d = pd.to_datetime(meta.iloc[0,0]).date()
-    max_d = pd.to_datetime(meta.iloc[0,1]).date()
+    # live path
+    meta = run_query("SELECT MIN(order_date) AS min_d, MAX(order_date) AS max_d FROM sandbox.ecommerce_orders",
+                     force_offline=force_offline)
+    if meta.empty or pd.isna(meta.iloc[0]["min_d"]) or pd.isna(meta.iloc[0]["max_d"]):
+        min_d, max_d = date(2023,1,1), date(2024,12,31)  # safe fallback
+    else:
+        min_d = pd.to_datetime(meta.iloc[0]["min_d"]).date()
+        max_d = pd.to_datetime(meta.iloc[0]["max_d"]).date()
 
-    regions = run_query("SELECT DISTINCT region FROM sandbox.ecommerce_orders ORDER BY 1")["region"].tolist()
-    cats    = run_query("SELECT DISTINCT category FROM sandbox.ecommerce_orders ORDER BY 1")["category"].tolist()
-    subs    = run_query("SELECT DISTINCT sub_category FROM sandbox.ecommerce_orders ORDER BY 1")["sub_category"].tolist()
+    regions = run_query("SELECT DISTINCT region FROM sandbox.ecommerce_orders WHERE region IS NOT NULL ORDER BY 1",
+                        force_offline=force_offline)
+    cats    = run_query("SELECT DISTINCT category FROM sandbox.ecommerce_orders WHERE category IS NOT NULL ORDER BY 1",
+                        force_offline=force_offline)
+    subs    = run_query("SELECT DISTINCT sub_category FROM sandbox.ecommerce_orders WHERE sub_category IS NOT NULL ORDER BY 1",
+                        force_offline=force_offline)
 
-    return min_d, max_d, regions, cats, subs
-    
-# -----------------------------
-# Sidebar filters
-# -----------------------------
+    return (min_d, max_d,
+            regions["region"].tolist() if not regions.empty else [],
+            cats["category"].tolist() if not cats.empty else [],
+            subs["sub_category"].tolist() if not subs.empty else [])
+
+# get values BEFORE rendering date_input
+try:
+    min_d, max_d, regions, cats, subs = bootstrap_filters(force_offline=force_offline)
+except Exception:
+    min_d, max_d, regions, cats, subs = date(2023,1,1), date(2024,12,31), [], [], []
+
+# Clamp to CSV window in offline mode (prevents empty UI)
+if force_offline:
+    csv_min, csv_max = get_offline_demo_date_bounds()
+    if min_d < csv_min or min_d > csv_max: min_d = csv_min
+    if max_d < csv_min or max_d > csv_max: max_d = csv_max
+if min_d > max_d:
+    min_d, max_d = max_d, min_d
+
+# ===== 3) Now render the rest of the sidebar (date_input uses defined vars) =====
 with st.sidebar:
     st.header("Filters")
     drange = st.date_input(
         "Order date range",
         value=(max(min_d, max_d - timedelta(days=180)), max_d),
-        min_value=min_d, max_value=max_d
+        min_value=min_d,
+        max_value=max_d,
     )
-    region = st.multiselect("Region", regions, default=regions[:2] if regions else [])
-    category = st.multiselect("Category", cats, default=cats[:3] if cats else [])
-    subcat = st.multiselect("Sub-Category", subs)
-
+    region   = st.multiselect("Region", regions,   default=(regions[:2] if regions else []))
+    category = st.multiselect("Category", cats,    default=(cats[:3]   if cats    else []))
+    subcat   = st.multiselect("Sub-Category", subs)
     st.divider()
-    st.subheader("Query Options")
     limit_rows = st.slider("Row limit (tables)", 100, 10000, 1000, step=100)
-
-    st.divider()
-    if st.button("🔌 Start Warehouse"):
-        ok = start_warehouse_and_wait()
-        if ok:
-            st.success("Warehouse is running.")
-        else:
-            st.error("Could not start warehouse — check permissions or token.")
-
-    force_offline = st.checkbox("Force Offline Demo (CSV)", value=True)
-
-
-start_date, end_date = (drange if isinstance(drange, tuple) else (min_d, max_d))
-
-try:
-    min_d, max_d, regions, cats, subs = bootstrap_filters()
-except Exception:
-    min_d, max_d, regions, cats, subs = date(2021, 1, 1), date.today(), [], [], []
-
-# If min_d somehow ends up after max_d, swap them
-if min_d > max_d:
-    min_d, max_d = max_d, min_d
-
-# if running offline, override to known demo range so filters aren’t empty
-if offline_available():
-    min_d, max_d = get_offline_demo_date_bounds()
-
-if force_offline:
-    # Match your CSV (adjust if yours differs)
-    csv_min, csv_max = get_offline_demo_date_bounds()  # 2023-01-01 .. 2024-12-31 in our sample
-    # If current selection is outside the CSV, pull it back in
-    if not (csv_min <= min_d <= csv_max): min_d = csv_min
-    if not (csv_min <= max_d <= csv_max): max_d = csv_max
-
+    
 # -----------------------------
 # Build WHERE clause safely
 # -----------------------------
