@@ -257,7 +257,16 @@ with st.sidebar:
     subcat   = st.multiselect("Sub-Category", subs)
     st.divider()
     limit_rows = st.slider("Row limit (tables)", 100, 10000, 1000, step=100)
-    
+
+if isinstance(drange, (list, tuple)) and len(drange) == 2:
+    start_date, end_date = drange
+else:
+    # fallback to full range
+    start_date, end_date = min_d, max_d
+
+# Now params is defined and ready for your SQL
+params: list[str] = [str(start_date), str(end_date)
+
 # -----------------------------
 # Build WHERE clause safely
 # -----------------------------
