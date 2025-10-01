@@ -192,58 +192,33 @@ TABLE = "ecommerce_orders"   # columns from your screenshot
 
 FQTN = f"{CATALOG}.{TABLE}"
 
-try:
-    min_d, max_d, regions, cats, subs = bootstrap_filters()
-except Exception:
-    min_d, max_d, regions, cats, subs = date(2021, 1, 1), date.today(), [], [], []
-
-# If min_d somehow ends up after max_d, swap them
-if min_d > max_d:
-    min_d, max_d = max_d, min_d
-
-# if running offline, override to known demo range so filters aren’t empty
-if offline_available():
-    min_d, max_d = get_offline_demo_date_bounds()
-
 # -----------------------------
 # Load basic ranges for filters
 # -----------------------------
 @st.cache_data(ttl=300)
-def bootstrap_filters():
-    def safe_cols(df):
-        return {c.lower(): c for c in df.columns} if (df is not None and not df.empty) else {}
+def bootstrap_filters(force_offline=False):
+    if force_offline and offline_available():
+        # Use static CSV ranges and distincts
+        csv_min, csv_max = get_offline_demo_date_bounds()
+        df = pd.read_csv(OFFLINE_CSV)
 
-    # Defaults if the warehouse is sleeping or query fails
-    min_d, max_d = date(2021, 1, 1), date.today()
-    regions, cats, subs = [], [], []
+        regions = sorted(df["region"].dropna().unique().tolist())
+        cats    = sorted(df["category"].dropna().unique().tolist())
+        subs    = sorted(df["sub_category"].dropna().unique().tolist())
 
-    try:
-        meta = run_query(f"SELECT MIN(order_date) AS min_date, MAX(order_date) AS max_date FROM {FQTN}")
-        m = safe_cols(meta)
-        if meta is not None and not meta.empty and "min_date" in m and "max_date" in m:
-            md = meta[m["min_date"]][0]
-            xd = meta[m["max_date"]][0]
-            if pd.notna(md): min_d = pd.to_datetime(md).date()
-            if pd.notna(xd): max_d = pd.to_datetime(xd).date()
+        return csv_min, csv_max, regions, cats, subs
 
-        def distinct(col):
-            df = run_query(f"SELECT DISTINCT {col} AS v FROM {FQTN} WHERE {col} IS NOT NULL ORDER BY 1")
-            mm = safe_cols(df)
-            return df[mm.get("v", col)].dropna().tolist() if df is not None and not df.empty else []
+    # --- otherwise, query Databricks ---
+    meta = run_query("SELECT MIN(order_date), MAX(order_date) FROM sandbox.ecommerce_orders")
+    min_d = pd.to_datetime(meta.iloc[0,0]).date()
+    max_d = pd.to_datetime(meta.iloc[0,1]).date()
 
-        regions = distinct("region")
-        cats    = distinct("category")
-        subs    = distinct("sub_category")
-    except Exception:
-        # swallow errors and keep defaults
-        pass
+    regions = run_query("SELECT DISTINCT region FROM sandbox.ecommerce_orders ORDER BY 1")["region"].tolist()
+    cats    = run_query("SELECT DISTINCT category FROM sandbox.ecommerce_orders ORDER BY 1")["category"].tolist()
+    subs    = run_query("SELECT DISTINCT sub_category FROM sandbox.ecommerce_orders ORDER BY 1")["sub_category"].tolist()
 
-    # if running offline, override to known demo range so filters aren’t empty
-    if offline_available():
-        min_d, max_d = get_offline_demo_date_bounds()
-    
     return min_d, max_d, regions, cats, subs
-
+    
 # -----------------------------
 # Sidebar filters
 # -----------------------------
@@ -274,6 +249,19 @@ with st.sidebar:
 
 
 start_date, end_date = (drange if isinstance(drange, tuple) else (min_d, max_d))
+
+try:
+    min_d, max_d, regions, cats, subs = bootstrap_filters()
+except Exception:
+    min_d, max_d, regions, cats, subs = date(2021, 1, 1), date.today(), [], [], []
+
+# If min_d somehow ends up after max_d, swap them
+if min_d > max_d:
+    min_d, max_d = max_d, min_d
+
+# if running offline, override to known demo range so filters aren’t empty
+if offline_available():
+    min_d, max_d = get_offline_demo_date_bounds()
 
 if force_offline:
     # Match your CSV (adjust if yours differs)
