@@ -270,7 +270,7 @@ with st.sidebar:
         else:
             st.error("Could not start warehouse — check permissions or token.")
 
-    force_offline = st.checkbox("Force Offline Demo (CSV)", value=False)
+    force_offline = st.checkbox("Force Offline Demo (CSV)", value=True)
 
 
 start_date, end_date = (drange if isinstance(drange, tuple) else (min_d, max_d))
@@ -621,7 +621,7 @@ if "chat" in st.session_state and st.session_state["chat"]:
         sql_text = CANNED[q]
         st.markdown(f"**Assistant:** Here’s what I’d run for “_{q}_”.")
         st.code(sql_text.strip(), language="sql")
-        df = run_query(sql_text, tuple(params))
+        df = run_query(sql_text, tuple(params), force_offline=force_offline)
         if df.empty:
             st.info("No rows returned for the current filters.")
         else:
