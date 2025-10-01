@@ -327,7 +327,7 @@ SELECT
   COUNT(DISTINCT order_id) AS orders,
   COUNT(DISTINCT customer_id) AS customers
 FROM ({base_sql}) t
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 # Time series
 ts = run_query(f"""
@@ -335,7 +335,7 @@ SELECT order_date, SUM(sales) AS sales, SUM(profit) AS profit
 FROM ({base_sql}) t
 GROUP BY order_date
 ORDER BY order_date
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 # Category breakdown
 by_cat = run_query(f"""
@@ -343,7 +343,7 @@ SELECT category, SUM(sales) AS sales, SUM(profit) AS profit
 FROM ({base_sql}) t
 GROUP BY category
 ORDER BY sales DESC
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 # Top products
 top_products = run_query(f"""
@@ -352,14 +352,14 @@ FROM ({base_sql}) t
 GROUP BY product_name
 ORDER BY sales DESC
 LIMIT 15
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 # Sample table
 sample = run_query(f"""
 {base_sql}
 ORDER BY order_date DESC
 LIMIT {limit_rows}
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 # -----------------------------
 # KPIs row
@@ -419,7 +419,7 @@ SELECT order_date, region, SUM(sales) AS sales
 FROM ({base_sql}) t
 GROUP BY order_date, region
 ORDER BY order_date
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 col1, col2 = st.columns((3,2), gap="large")
 
@@ -444,7 +444,7 @@ with col2:
     SELECT
       CASE WHEN sales != 0 THEN profit / sales ELSE NULL END AS margin
     FROM ({base_sql}) t
-    """, tuple(params))
+    """, tuple(params), force_offline=force_offline)
     if not margins.empty:
         margins = margins.dropna()
         hist = alt.Chart(margins).mark_bar().encode(
@@ -464,7 +464,7 @@ st.markdown("#### Discount vs Profit (all orders)")
 disc_profit = run_query(f"""
 SELECT COALESCE(discount,0) AS discount, profit, sales
 FROM ({base_sql}) t
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 if not disc_profit.empty:
     scatter = alt.Chart(disc_profit).mark_circle(size=40, opacity=0.6).encode(
@@ -487,7 +487,7 @@ FROM ({base_sql}) t
 GROUP BY product_name
 ORDER BY sales DESC
 LIMIT 20
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 if not top_prod_full.empty:
     dfp = top_prod_full.copy()
@@ -519,7 +519,7 @@ heat = run_query(f"""
 SELECT category, sub_category, SUM(sales) AS sales
 FROM ({base_sql}) t
 GROUP BY category, sub_category
-""", tuple(params))
+""", tuple(params), force_offline=force_offline)
 
 if not heat.empty:
     hm = alt.Chart(heat).mark_rect().encode(
