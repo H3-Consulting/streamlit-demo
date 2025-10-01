@@ -265,7 +265,7 @@ else:
     start_date, end_date = min_d, max_d
 
 # Now params is defined and ready for your SQL
-params: list[str] = [str(start_date), str(end_date)
+params: list[str] = [str(start_date), str(end_date)]
 
 # -----------------------------
 # Build WHERE clause safely
