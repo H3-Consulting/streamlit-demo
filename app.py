@@ -1,3 +1,32 @@
+import streamlit as st
+
+# --- Remote reboot handler (must be at the top) ---
+# Supports either ?reboot=1 or any ?_ts=<timestamp> cache-buster
+params = dict(st.query_params)
+
+should_reboot = params.get("reboot") == "1" or ("_ts" in params)
+
+if should_reboot:
+    # Purge caches/session
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    try:
+        st.cache_resource.clear()
+    except Exception:
+        pass
+    st.session_state.clear()
+
+    # Remove the reboot flag so we don't loop forever
+    params.pop("reboot", None)
+    params.pop("_ts", None)
+    # IMPORTANT: reassign to actually update the URL
+    st.query_params = params
+
+    # Rerun immediately
+    st.rerun()
+
 import os
 import json
 import time
@@ -5,7 +34,6 @@ import pandas as pd
 import numpy as np
 import altair as alt
 import pydeck as pdk
-import streamlit as st
 from databricks import sql
 import requests
 from datetime import date, timedelta
