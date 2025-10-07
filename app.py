@@ -1,32 +1,4 @@
 import streamlit as st
-
-# --- Remote reboot handler (must be at the top) ---
-# Supports either ?reboot=1 or any ?_ts=<timestamp> cache-buster
-params = dict(st.query_params)
-
-should_reboot = params.get("reboot") == "1" or ("_ts" in params)
-
-if should_reboot:
-    # Purge caches/session
-    try:
-        st.cache_data.clear()
-    except Exception:
-        pass
-    try:
-        st.cache_resource.clear()
-    except Exception:
-        pass
-    st.session_state.clear()
-
-    # Remove the reboot flag so we don't loop forever
-    params.pop("reboot", None)
-    params.pop("_ts", None)
-    # IMPORTANT: reassign to actually update the URL
-    st.query_params = params
-
-    # Rerun immediately
-    st.rerun()
-
 import os
 import json
 import time
@@ -48,18 +20,6 @@ import re
 OFFLINE_CSV = "data/ecommerce_orders_sample.csv"
 _duck_con = None
 st.cache_data.clear()
-
-qp = st.query_params
-if qp.get("reboot") == "1":
-    st.cache_data.clear()
-    try:
-        st.cache_resource.clear()
-    except Exception:
-        pass
-    st.session_state.clear()
-    # Remove the reboot flag so we don't loop forever
-    qp.pop("reboot", None)
-    st.rerun()
 
 def offline_available() -> bool:
     return os.path.exists(OFFLINE_CSV)
